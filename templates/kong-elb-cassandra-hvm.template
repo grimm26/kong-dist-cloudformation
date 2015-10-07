@@ -2,6 +2,18 @@
   "AWSTemplateFormatVersion": "2010-09-09",
   "Description": "Kong CloudFormation template.Template creates load balanced Kong instances with Cassandra cluster",
   "Parameters": {
+    "VpcId" : {
+      "Type" : "AWS::EC2::VPC::Id",
+      "Description" : "Optional - VPC Id of existing VPC. Leave blank to have a new VPC created"
+    },
+    "VpcAvailabilityZones" : {
+      "Type" : "List<AWS::EC2::AvailabilityZone::Name>",
+      "Description" : "VPC availability zones"
+    },
+    "SubnetIds" : {
+      "Type" : "List<AWS::EC2::Subnet::Id>",
+      "Description" : "Optional - Comma separated list of existing VPC Subnet Ids where ECS instances will run"
+    },
     "CassandraKeyName": {
       "Description": "Name of an existing EC2 KeyPair to enable SSH access to the instances for Cassandra",
       "Type": "AWS::EC2::KeyPair::KeyName",
@@ -234,8 +246,8 @@
       "Type": "AWS::AutoScaling::AutoScalingGroup",
       "DependsOn" : "CassandraWaitCondition",
       "Properties": {
-        "AvailabilityZones": {
-          "Ref": "KongAvailabilityZones"
+        "VPCZoneIdentifier" : { 
+          "Ref" : "SubnetIds" 
         },
         "LaunchConfigurationName": {
           "Ref": "KongLaunchConfig"
@@ -296,11 +308,11 @@
         "KeyName": {
           "Ref": "KongKeyName"
         },
-        "SecurityGroups": [
-          {
-            "Ref": "KongSecurityGroup"
-          }
-        ],
+        "SecurityGroups": [ 
+          { 
+              "Fn::GetAtt" : [ "KongSecurityGroup", "GroupId" ] 
+          } 
+         ],
         "UserData": {
           "Fn::Base64": {
             "Fn::Join": [
@@ -364,9 +376,12 @@
     "KongLoadBalancer": {
       "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
       "Properties": {
-        "AvailabilityZones": {
-          "Ref": "KongAvailabilityZones"
-        },
+        "Subnets" : { "Ref" : "SubnetIds" },
+        "SecurityGroups" : [ 
+          { 
+              "Fn::GetAtt" : [ "KongELBSecurityGroup", "GroupId" ] 
+          } 
+         ],
         "Listeners": [
           {
             "LoadBalancerPort": "8000",
@@ -388,7 +403,7 @@
         }
       }
     },
-    "KongSecurityGroup": {
+    "KongELBSecurityGroup": {
       "Type": "AWS::EC2::SecurityGroup",
       "Properties": {
         "GroupDescription": "Enable SSH access and HTTP access on the inbound port",
@@ -420,6 +435,39 @@
         ]
       }
     },
+    "KongSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "DependsOn": "KongELBSecurityGroup",
+      "Properties": {
+        "GroupDescription": "Enable SSH access and HTTP access on the inbound port",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "8000",
+            "ToPort": "8000",
+            "SourceSecurityGroupId" :  { 
+              "Fn::GetAtt" : [ "KongELBSecurityGroup", "GroupId" ] 
+            }
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "8001",
+            "ToPort": "8001",
+            "SourceSecurityGroupId" :  { 
+              "Fn::GetAtt" : [ "KongELBSecurityGroup", "GroupId" ] 
+            }
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "22",
+            "ToPort": "22",
+            "SourceSecurityGroupId" :  { 
+              "Fn::GetAtt" : [ "KongELBSecurityGroup", "GroupId" ] 
+            }
+          }
+        ]
+      }
+    },
     "CassandraWaitHandle" : {
       "Type" : "AWS::CloudFormation::WaitConditionHandle"
     },
@@ -438,11 +486,11 @@
         "LaunchConfigurationName": {
           "Ref": "CassandraLaunchConfig"
         },
-        "AvailabilityZones": [
+        "VPCZoneIdentifier" : [
           {
-            "Ref": "CassandraAvailabilityZone"
-          }
-        ], 
+            "Fn::Select" : [ "0", { "Ref" : "SubnetIds" } ] 
+          }  
+        ],
         "MinSize": {
           "Ref": "CassandraFleetSize"
         },
@@ -469,6 +517,7 @@
       "Type": "AWS::EC2::SecurityGroup",
       "Properties": {
         "GroupDescription": "Cassandra SecurityGroup",
+        "VpcId" : { "Ref" : "VpcId" },
         "SecurityGroupIngress": [
           {"IpProtocol": "tcp", "FromPort": "22", "ToPort": "22", "CidrIp": {"Ref": "SSHLocation"}},
           {"IpProtocol": "tcp", "FromPort": "8888", "ToPort": "8888", "CidrIp": {"Ref": "CassandraOpsCenterAccess"}}
@@ -478,7 +527,12 @@
     "Ingress1024To65355": {
       "Type": "AWS::EC2::SecurityGroupIngress",
       "Properties": {
-        "GroupName": {"Ref": "CassandraSecurityGroup"}, "IpProtocol": "tcp", "FromPort": "1024", "ToPort": "65355", "SourceSecurityGroupId": {
+        "GroupId": {
+          "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
+        }, 
+        "IpProtocol": "tcp", "FromPort": "1024", 
+        "ToPort": "65355", 
+        "SourceSecurityGroupId": {
           "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
         }
       }
@@ -486,7 +540,13 @@
     "Ingress7000": {
       "Type": "AWS::EC2::SecurityGroupIngress",
       "Properties": {
-        "GroupName": {"Ref": "CassandraSecurityGroup"}, "IpProtocol": "tcp", "FromPort": "7000", "ToPort": "7000", "SourceSecurityGroupId": {
+        "GroupId": {
+          "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
+        },  
+        "IpProtocol": "tcp", 
+        "FromPort": "7000", 
+        "ToPort": "7000", 
+        "SourceSecurityGroupId": {
           "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
         }
       }
@@ -494,7 +554,13 @@
     "Ingress7001": {
       "Type": "AWS::EC2::SecurityGroupIngress",
       "Properties": {
-        "GroupName": {"Ref": "CassandraSecurityGroup"}, "IpProtocol": "tcp", "FromPort": "7001", "ToPort": "7001", "SourceSecurityGroupId": {
+        "GroupId": {
+          "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
+        }, 
+        "IpProtocol": "tcp", 
+        "FromPort": "7001", 
+        "ToPort": "7001", 
+        "SourceSecurityGroupId": {
           "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
         }
       }
@@ -502,7 +568,13 @@
     "Ingress7199": {
       "Type": "AWS::EC2::SecurityGroupIngress",
       "Properties": {
-        "GroupName": {"Ref": "CassandraSecurityGroup"}, "IpProtocol": "tcp", "FromPort": "7199", "ToPort": "7199", "SourceSecurityGroupId": {
+        "GroupId": {
+          "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
+        }, 
+        "IpProtocol": "tcp", 
+        "FromPort": "7199", 
+        "ToPort": "7199", 
+        "SourceSecurityGroupId": {
           "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
         }
       }
@@ -510,7 +582,13 @@
     "Ingress61620": {
       "Type": "AWS::EC2::SecurityGroupIngress",
       "Properties": {
-        "GroupName": {"Ref": "CassandraSecurityGroup"}, "IpProtocol": "tcp", "FromPort": "61620", "ToPort": "61620", "SourceSecurityGroupId": {
+        "GroupId": {
+          "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
+        }, 
+        "IpProtocol": "tcp", 
+        "FromPort": "61620", 
+        "ToPort": "61620", 
+        "SourceSecurityGroupId": {
           "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
         }
       }
@@ -518,7 +596,13 @@
     "Ingress61621": {
       "Type": "AWS::EC2::SecurityGroupIngress",
       "Properties": {
-        "GroupName": {"Ref": "CassandraSecurityGroup"}, "IpProtocol": "tcp", "FromPort": "61621", "ToPort": "61621", "SourceSecurityGroupId": {
+        "GroupId": {
+          "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
+        },  
+        "IpProtocol": "tcp", 
+        "FromPort": "61621", 
+        "ToPort": "61621", 
+        "SourceSecurityGroupId": {
           "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
         }
       }
@@ -526,7 +610,13 @@
     "Ingress9042": {
       "Type": "AWS::EC2::SecurityGroupIngress",
       "Properties": {
-        "GroupName": {"Ref": "CassandraSecurityGroup"}, "IpProtocol": "tcp", "FromPort": "9042", "ToPort": "9042", "SourceSecurityGroupId": {
+        "GroupId": {
+          "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
+        }, 
+        "IpProtocol": "tcp", 
+        "FromPort": "9042", 
+        "ToPort": "9042", 
+        "SourceSecurityGroupId": {
           "Fn::GetAtt" : [ "KongSecurityGroup", "GroupId" ]
         }
       }
@@ -534,7 +624,13 @@
     "Ingress9160": {
       "Type": "AWS::EC2::SecurityGroupIngress",
       "Properties": {
-        "GroupName": {"Ref": "CassandraSecurityGroup"}, "IpProtocol": "tcp", "FromPort": "9160", "ToPort": "9160", "SourceSecurityGroupId": {
+        "GroupId": {
+          "Fn::GetAtt" : [ "CassandraSecurityGroup", "GroupId" ]
+        },  
+        "IpProtocol": "tcp", 
+        "FromPort": "9160", 
+        "ToPort": "9160", 
+        "SourceSecurityGroupId": {
           "Fn::GetAtt" : [ "KongSecurityGroup", "GroupId" ]
         }
       }
@@ -573,7 +669,7 @@
                 "publicip=`curl http://169.254.169.254/latest/meta-data/public-ipv4`\n",
                 "publichost=`curl http://169.254.169.254/latest/meta-data/public-hostname`\n",
                 "cfn-signal -e 0 --data $publicip --id $publichost --reason \"Kong setup completed\" '", { "Ref" : "CassandraWaitHandle" }, "'\n",
-                "--clustername ",{ "Ref": "CassandraClusterName" }, " --totalnodes ", { "Ref": "KongFleetDesiredSize" }," --version ", { "Ref": "CassandraClusterVersion" }," --release ",{"Ref": "CassandraVersion"},
+                "--clustername ",{ "Ref": "CassandraClusterName" }, " --totalnodes ", { "Ref": "CassandraFleetSize" }," --version ", { "Ref": "CassandraClusterVersion" }," --release ",{"Ref": "CassandraVersion"},
                 "\n"   
               ]
             ]

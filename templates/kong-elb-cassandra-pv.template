@@ -358,6 +358,7 @@
         "AvailabilityZones": {
           "Ref": "KongAvailabilityZones"
         },
+        "SecurityGroups" : [ { "Ref" : "KongELBSecurityGroup" } ],
         "CrossZone": "true",
         "Listeners": [
           {
@@ -380,7 +381,7 @@
         }
       }
     },
-    "KongSecurityGroup": {
+    "KongELBSecurityGroup": {
       "Type": "AWS::EC2::SecurityGroup",
       "Properties": {
         "GroupDescription": "Enable SSH access and HTTP access on the inbound port",
@@ -408,6 +409,32 @@
             "CidrIp": {
               "Ref": "SSHLocation"
             }
+          }
+        ]
+      }
+    },
+    "KongSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Enable SSH access and HTTP access on the inbound port",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "8000",
+            "ToPort": "8000",
+            "SourceSecurityGroupId" :  { "Ref" : "KongELBSecurityGroup" }
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "8001",
+            "ToPort": "8001",
+            "SourceSecurityGroupId" :  { "Ref" : "KongELBSecurityGroup" }
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "22",
+            "ToPort": "22",
+            "SourceSecurityGroupId" :  { "Ref" : "KongELBSecurityGroup" }
           }
         ]
       }
