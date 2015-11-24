@@ -1,0 +1,145 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Kong with single node Cassandra cluster CloudFormation template. version v1.0",
+  "Parameters": {
+    "KongKeyName": {
+      "Description": "Name of an existing EC2 KeyPair to enable SSH access to the instances for Kong",
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "Default": ""
+    },
+    "KongVersion": {
+      "Description": "Kong version, leave empty to install latest version",
+      "Type": "String",
+      "Default": "0.5.0"
+    }
+  },
+  "Mappings": {
+    "RegionKongAmiMap": {
+      "us-east-1": {
+        "HVM": "ami-e3106686"
+      },
+      "us-west-1": {
+        "HVM": "ami-cd3aff89"
+      },
+      "us-west-2": {
+        "HVM": "ami-9ff7e8af"
+      },
+      "eu-west-1" : {
+        "HVM": "ami-69b9941e"
+      },
+      "ap-northeast-1" : {
+         "HVM": "ami-9a2fb89a"
+      },
+      "ap-southeast-1" : {
+         "HVM": "ami-52978200"
+      },
+      "ap-southeast-2" : {
+         "HVM": "ami-c11856fb"
+      },
+      "sa-east-1" : {
+         "HVM" : "ami-3b0c9926"
+      }
+    }
+  },
+  "Resources": {
+    "KongWaitHandle" : {
+      "Type" : "AWS::CloudFormation::WaitConditionHandle"
+    },
+    "KongWaitCondition" : {
+      "Type" : "AWS::CloudFormation::WaitCondition",
+      "Properties" : {
+        "Handle"  : { "Ref" : "KongWaitHandle" },
+        "Timeout" : "900",
+        "Count"   : 1
+      }
+    },
+    "KongWithCass": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Fn::FindInMap": [
+            "RegionKongAmiMap",
+            {
+              "Ref": "AWS::Region"
+            },
+            "HVM"
+          ]
+        },
+        "InstanceType": "t2.medium",
+        "KeyName": {
+          "Ref": "KongKeyName"
+        },
+        "SecurityGroups": [
+          {
+            "Ref": "KongSecurityGroup"
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!\/bin\/bash\n",
+                "yum update -y aws-cfn-bootstrap\n",
+                "yum install openssl098e -y\n",
+                "echo '* soft nofile 65000' >> \/etc\/security\/limits.conf\n",
+                "echo '* hard nofile 65000' >> \/etc\/security\/limits.conf\n",
+                "printf '%s\\n%s\\n%s\\n%s\\n%s\\n ' '[datastax] ' 'name = DataStax Repo for Apache Cassandra' 'baseurl = http://rpm.datastax.com/community' 'enabled = 1' 'gpgcheck = 0'  >> datastax.repo\n",
+                "mv datastax.repo  /etc/yum.repos.d/\n",
+                "yum install dsc22 -y\n",
+                "kong_version=",{ "Ref" : "KongVersion" }, "\n",
+                "kong_major_version=$(echo $kong_version | sed -E 's/([0-9].[0-9]).*/\\1.x/' )\n",
+                "wget https://bintray.com/mashape/kong-rpm-el5-$kong_major_version/rpm -O kong-$kong_major_version.repo\n",
+                "mv  kong-$kong_major_version.repo /etc/yum.repos.d/\n",
+                "if [ -e \"/etc/yum.repos.d/kong-$kong_major_version.repo\" ]\n",
+                "then\n",
+                "   echo \"Installing Kong...\" \n",
+                "else\n", 
+                "   /opt/aws/bin/cfn-signal -e 1 --reason \"Failed to setup kong repo\" '", { "Ref" : "KongWaitHandle" }, "'\n",
+                "   echo \"failed to download kong, exiting...\" \n",
+                "   exit\n",
+                "fi\n", 
+                "yum install -y epel-release\n",
+                "yum install -y kong\n",
+                "mkdir /var/log/kong && touch /var/log/kong/kong_boot.log && chown ec2-user /var/log/kong/kong_boot.log\n",
+                "echo 'echo \"-----Setting up Kong and Cassandra: $(date)------\" >> /var/log/kong/kong_boot.log' >> /etc/rc.local\n",
+                "echo 'echo \"-----updating AMI tools------\" >> /var/log/kong/kong_boot.log' >> /etc/rc.local\n",
+                "echo 'yum update -y aws-amitools-ec2 >> /var/log/kong/kong_boot.log' >> /etc/rc.local\n",
+                "echo 'echo \"-----Starting Cassandra------\" >> /var/log/kong/kong_boot.log' >> /etc/rc.local\n",
+                "echo 'service cassandra start >> /var/log/kong_boot.log' >> /etc/rc.local\n",
+                "echo 'sleep 1m' >> /etc/rc.local \n",
+                "echo 'echo \"-----Starting Kong------\" >> /var/log/kong/kong_boot.log' >> /etc/rc.local\n",
+                "echo 'su -s /bin/sh -c \"/usr/local/bin/kong start\" ec2-user >> /var/log/kong/kong_boot.log' >> /etc/rc.local\n",
+                "passwd -l root \n",
+                "/opt/aws/bin/cfn-signal -e 0 --reason \"Kong setup completed\" '", { "Ref" : "KongWaitHandle" }, "'\n",
+                "find / -name 'authorized_keys' -delete\n",
+                "shred -u /etc/ssh/*_key /etc/ssh/*_key.pub\n",
+                "shred -u ~/.*history\n"
+              ]
+            ]
+          }
+        },
+        "Tags" : [
+          { 
+            "Key" : "Name", 
+            "Value" : {"Fn::Join": ["",["Kong-",{ "Ref" : "KongVersion" },"-cassandra-2.2.0-hvm-ami-base"  ]]} 
+          }                                                                                                                                                                                                                                                 
+        ]
+      }
+    },
+    "KongSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Enable SSH access and HTTP access on the inbound port",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "22",
+            "ToPort": "22",
+            "CidrIp": "0.0.0.0/0"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -2,6 +2,29 @@
   "AWSTemplateFormatVersion": "2010-09-09",
   "Description": "Kong CloudFormation template.Template creates load balanced Kong instances with Cassandra cluster",
   "Parameters": {
+    "KeystoreBucket": {
+      "Description": "Bucket name",
+      "Type": "String",
+      "Default": ""
+    },
+    "CassandraSSLVerify": {
+      "Description": "Verify certificate",
+      "Type": "String",
+      "AllowedValues": [
+        "true",
+        "false"
+      ]
+    },
+    "KeystoreAlias": {
+      "Description": "Keystore alias",
+      "Type": "String",
+      "Default": ""
+    },
+    "KeyStorePassword": {
+      "Description": "Keystore password",
+      "Type": "String",
+      "Default": ""
+    },
     "CassandraKeyName": {
       "Description": "Name of an existing EC2 KeyPair to enable SSH access to the instances for Cassandra",
       "Type": "AWS::EC2::KeyPair::KeyName",
@@ -227,6 +250,63 @@
     }
   },
   "Resources": {
+    "InstanceRole":{
+	   "Type":"AWS::IAM::Role",
+	   "Properties":{
+	      "AssumeRolePolicyDocument":{
+	         "Statement":[
+	            {
+	               "Effect":"Allow",
+	               "Principal":{
+	                  "Service":[
+	                     "ec2.amazonaws.com"
+	                  ]
+	               },
+	               "Action":[
+	                  "sts:AssumeRole"
+	               ]
+	            }
+	         ]
+	      },
+	      "Path":"/"
+	   }
+	},
+	"RolePolicies":{
+	   "Type":"AWS::IAM::Policy",
+	   "Properties":{
+	      "PolicyName":"S3Download",
+	      "PolicyDocument":{
+	         "Statement":[
+	            {
+	               "Action":[
+	                  "s3:GetObject"
+	               ],
+	               "Effect":"Allow",
+	               "Resource":
+                   {
+                     "Fn::Join": [ "", [ "arn:aws:s3:::", { "Ref":"KeystoreBucket" }, "/cassandra_keystore" ]]
+                   }
+	            }
+	         ]
+	      },
+	      "Roles":[
+	         {
+	            "Ref":"InstanceRole"
+	         }
+	      ]
+	   }
+	},
+	"InstanceProfile":{
+	   "Type":"AWS::IAM::InstanceProfile",
+	   "Properties":{
+	      "Path":"/",
+	      "Roles":[
+	         {
+	            "Ref":"InstanceRole"
+	         }
+	      ]
+	   }
+	},
     "KongGroup": {
       "Type": "AWS::AutoScaling::AutoScalingGroup",
       "DependsOn" : "CassandraWaitCondition",
@@ -277,7 +357,45 @@
     },
     "KongLaunchConfig": {
       "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Metadata":
+      {
+	    "AWS::CloudFormation::Authentication":
+		{
+		  "S3AccessCreds":
+		  {
+		    "type":"S3",
+	        "roleName":
+		    {
+		      "Ref":"InstanceRole"
+		    }
+		  }
+		},
+		"AWS::CloudFormation::Init":
+		{
+		  "config":
+		  {
+		    "files":
+		    {
+		      "/var/cassandra/keystore":
+		      {
+		        "source":
+		        {
+		          "Fn::Join": [ "", [ "https://s3.amazonaws.com/", { "Ref":"KeystoreBucket" }, "/cassandra_keystore" ]]
+		        }, 
+		        "mode":"000400",
+		        "owner":"cassandra",
+		        "group":"cassandra",
+		        "authentication":"S3AccessCreds"
+		      }
+		    } 
+		  } 
+	    }
+      },
       "Properties": {
+        "IamInstanceProfile":
+        {
+          "Ref":"InstanceProfile"
+        },
         "ImageId": {
           "Fn::FindInMap": [
             "RegionKongAmiMap",
@@ -336,6 +454,13 @@
                 "done;\n",
                 "sed -i $'/.*\"localhost:9042\"\/{r hosts\\n d}' \/etc\/kong\/kong.yml\n",
                 "sleep `echo $(( RANDOM % ( 60 - 30 + 1 ) + 30 ))`\n",
+                "pip install awscli\n",
+                "aws s3 cp s3://", { "Ref": "KeystoreBucket" }, "/cassandra_keystore /home/ec2-user/.keystore\n",
+                "keytool -export -alias ", { "Ref": "KeystoreAlias" }," -file /home/ec2-user/cassandra.cer -keystore /home/ec2-user/.keystore -storepass ", { "Ref": "KeyStorePassword" },"\n",
+                "keytool -import -v -trustcacerts -alias ", { "Ref": "KeystoreAlias" }," -file cassandra.cer -keystore /home/ec2-user/.truststore -noprompt -storepass ", { "Ref": "KeyStorePassword" },"\n",
+                "keytool -importkeystore -srckeystore /home/ec2-user/.keystore -destkeystore /home/ec2-user/cassandra.p12 -deststoretype PKCS12 -srcstorepass ", { "Ref": "KeyStorePassword" },  " -deststorepass", { "Ref": "KeyStorePassword" }, "\n",
+                "openssl pkcs12 -in /home/ec2-user/cassandra.p12 -out /home/ec2-user/cassandra.pem -passin pass:", { "Ref": "KeyStorePassword" }," -nodes\n",
+                "perl -0777  -i -pe 's/# ssl: false\\n      # ssl_verify: false\\n      # ssl_certificate: \"\\/path\\/to\\/cluster-ca-certificate.pem\"/ssl: true\\n      ssl_verify: ",{ "Ref": "CassandraSSLVerify" }, "\\n      ssl_certificate: \"\\/home\\/ec2-user\\/cassandra.pem\"/igs' /etc/kong/kong.yml\n",
                 "count=4\n",
                 "until [ -f \"\/usr\/local\/kong\/kong.pid\" ]\n",
                 "do\n",
@@ -538,7 +663,44 @@
     },
     "CassandraLaunchConfig": {
       "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Metadata":
+      {
+		  "AWS::CloudFormation::Authentication":
+		  {
+		    "S3AccessCreds":
+		    {
+		      "type":"S3",
+		      "roleName":
+		      {
+		        "Ref":"InstanceRole"
+		      }
+		    }
+		  },
+		  "AWS::CloudFormation::Init":
+		  {
+		    "config":
+		    {
+		      "files":
+		      {
+		        "/var/cassandra/keystore":
+		        {
+		          "source":
+		          {
+		            "Fn::Join": [ "", [ "https://s3.amazonaws.com/", { "Ref":"KeystoreBucket" }, "/cassandra_keystore" ]]
+		          }, 
+		          "mode":"000400",
+		          "owner":"cassandra",
+		          "group":"cassandra",
+		          "authentication":"S3AccessCreds"
+		        }
+		      } 
+		    } 
+		  }
+      },
       "Properties": {
+        "IamInstanceProfile":{
+               "Ref":"InstanceProfile"
+        },
         "ImageId": {
           "Fn::FindInMap": [
             "RegionCassAmiMap",
@@ -566,6 +728,15 @@
               [ 
                 "#!\/bin\/bash\n",
                 "apt-get -y install python-setuptools\n",
+                "pip install awscli\n",
+                "aws s3 cp s3://", { "Ref": "KeystoreBucket" }, "/cassandra_keystore /home/ubuntu/.keystore\n",
+                "keytool -export -alias ", { "Ref": "KeystoreAlias" }," -file /home/ubuntu/cassandra.cer -keystore /home/ubuntu/.keystore -storepass ", { "Ref": "KeyStorePassword" },"\n",
+                "keytool -import -v -trustcacerts -alias ", { "Ref": "KeystoreAlias" }," -file /home/ubuntu/cassandra.cer -keystore /home/ubuntu/.truststore -noprompt -storepass ", { "Ref": "KeyStorePassword" },"\n",
+                "chown cassandra /home/ubuntu/.keystore\n",
+                "chown cassandra /home/ubuntu/.truststore\n",
+                "perl -0777  -i -pe 's/client_encryption_options:\\n    enabled: false\\n    keystore: conf\\/\\.keystore\\n    keystore_password: cassandra/client_encryption_options:\\n    enabled: true\\n    keystore: \\/home\\/ubuntu\\/\\.keystore\\n    keystore_password: ", { "Ref": "KeyStorePassword" },"/igs' /etc/cassandra/cassandra.yaml\n",
+                "perl -0777  -i -pe 's/server_encryption_options:\\n    internode_encryption: none\\n    keystore: conf\\/\\.keystore\\n    keystore_password: cassandra\\n    truststore: conf\\/\\.truststore\\n    truststore_password: cassandra/server_encryption_options:\\n    internode_encryption: all\\n    keystore: \\/home\\/ubuntu\\/\\.keystore\\n    keystore_password: ", { "Ref": "KeyStorePassword" },"\\n    truststore: \\/home\\/ubuntu\\/\\.truststore\\n    truststore_password: ", { "Ref": "KeyStorePassword" },"/igs' /etc/cassandra/cassandra.yaml\n",
+                "perl -0777  -i -pe 's/# protocol: TLS/protocol: SSL/igs' /etc/cassandra/cassandra.yaml\n",
                 "easy_install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz\n",
                 "publicip=`curl http://169.254.169.254/latest/meta-data/public-ipv4`\n",
                 "publichost=`curl http://169.254.169.254/latest/meta-data/public-hostname`\n",
